@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/metaneutrons/devserial-mcp/compare/devserial-v0.1.1...devserial-v0.1.2) (2026-05-25)
+
+
+### Bug Fixes
+
+* **ci:** disable monitor feature for Linux ARM64 cross-compile ([0f957f4](https://github.com/metaneutrons/devserial-mcp/commit/0f957f44a01aed9f22d79453c9d2560315fa7a0b))
+* **ci:** use native ARM64 runners instead of cross-compile ([518a899](https://github.com/metaneutrons/devserial-mcp/commit/518a8990d5904653a4d8d360924721aedcd70bcf))
+
 ## [0.1.1](https://github.com/metaneutrons/devserial-mcp/compare/devserial-v0.1.0...devserial-v0.1.1) (2026-05-25)
 
 
