@@ -84,7 +84,17 @@ jobs:
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
 
       - name: Build
-        run: cargo build --release --all-features --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          # Monitor (GUI) doesn't cross-compile for Linux ARM64 (winit limitation)
+          case "${{ matrix.target }}" in
+            aarch64-unknown-linux-*)
+              cargo build --release --features "esp,tui" --target ${{ matrix.target }}
+              ;;
+            *)
+              cargo build --release --all-features --target ${{ matrix.target }}
+              ;;
+          esac
 
       - name: Create archive
         shell: bash
