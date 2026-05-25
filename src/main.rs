@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Fabian Schmieder
 
 use clap::{Parser, Subcommand};
+use std::io::IsTerminal;
 
 /// `DevSerial` — Serial hardware bridge for LLMs and developers.
 #[derive(Parser)]
@@ -68,7 +69,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        None | Some(Command::Mcp) => run_mcp()?,
+        None | Some(Command::Mcp) => {
+            if std::io::stdin().is_terminal() && cli.command.is_none() {
+                // Interactive terminal without explicit subcommand → show help
+                use clap::CommandFactory;
+                Cli::command().print_help()?;
+                println!();
+                return Ok(());
+            }
+            run_mcp()?;
+        }
 
         #[cfg(feature = "monitor")]
         Some(Command::Monitor { port, baud }) => {
