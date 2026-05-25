@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1c1c2e"/>
+      <stop offset="100%" stop-color="#2a1f4a"/>
+    </linearGradient>
+    <linearGradient id="pulse" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00d2ff"/>
+      <stop offset="50%" stop-color="#7b2ff7"/>
+      <stop offset="100%" stop-color="#ff2d95"/>
+    </linearGradient>
+    <linearGradient id="glass-border" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.7"/>
+      <stop offset="30%" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="60%" stop-color="#ffffff" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.0"/>
+    </linearGradient>
+    <clipPath id="rounded">
+      <rect x="50" y="50" width="412" height="412" rx="90"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#rounded)">
+    <rect x="50" y="50" width="412" height="412" fill="url(#bg)"/>
+
+    <!-- Waveform — inset further -->
+    <path
+      d="M 100 256
+         L 152 256
+         L 166 152
+         L 192 152
+         L 206 256
+         L 240 256
+         L 256 360
+         L 282 360
+         L 296 256
+         L 330 256
+         L 346 176
+         L 372 176
+         L 386 256
+         L 412 256"
+      fill="none"
+      stroke="url(#pulse)"
+      stroke-width="22"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+
+    <!-- Glow -->
+    <path
+      d="M 100 256
+         L 152 256
+         L 166 152
+         L 192 152
+         L 206 256
+         L 240 256
+         L 256 360
+         L 282 360
+         L 296 256
+         L 330 256
+         L 346 176
+         L 372 176
+         L 386 256
+         L 412 256"
+      fill="none"
+      stroke="url(#pulse)"
+      stroke-width="36"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      opacity="0.15"
+    />
+  </g>
+
+  <!-- Glass border -->
+  <rect x="50" y="50" width="412" height="412" rx="90"
+        fill="none" stroke="url(#glass-border)" stroke-width="3"/>
+</svg>

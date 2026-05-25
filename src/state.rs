@@ -1,0 +1,229 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Fabian Schmieder
+
+//! Unified state persistence via `config.db`.
+//!
+//! Stores:
+//! - Active port configurations (for auto-reopen on restart)
+//! - Send history (per port)
+
+use std::path::{Path, PathBuf};
+
+use rusqlite::{Connection, params};
+
+use crate::config::PortConfig;
+
+/// Errors from the state store.
+#[derive(Debug, thiserror::Error)]
+pub enum StateError {
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+/// A port entry stored in config.db.
+#[derive(Debug, Clone)]
+pub struct PortEntry {
+    pub name: String,
+    pub config: PortConfig,
+}
+
+/// Unified state database.
+pub struct StateDb {
+    conn: Connection,
+}
+
+impl StateDb {
+    /// Open or create the state database at the given path.
+    ///
+    /// # Errors
+    /// Returns error if the database cannot be opened.
+    pub fn open(data_dir: &Path) -> Result<Self, StateError> {
+        std::fs::create_dir_all(data_dir)?;
+        let db_path = data_dir.join("config.db");
+        let conn = Connection::open(db_path)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA busy_timeout=5000;
+             CREATE TABLE IF NOT EXISTS ports (
+                 name TEXT PRIMARY KEY,
+                 config_json TEXT NOT NULL,
+                 opened_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS send_history (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 port_name TEXT NOT NULL,
+                 timestamp_ns INTEGER NOT NULL,
+                 command TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_send_history_port
+                 ON send_history(port_name, id);",
+        )?;
+        Ok(Self { conn })
+    }
+
+    /// Open an in-memory state database (for testing).
+    ///
+    /// # Errors
+    /// Returns error if the database cannot be created.
+    pub fn open_memory() -> Result<Self, StateError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE ports (
+                 name TEXT PRIMARY KEY,
+                 config_json TEXT NOT NULL,
+                 opened_at INTEGER NOT NULL
+             );
+             CREATE TABLE send_history (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 port_name TEXT NOT NULL,
+                 timestamp_ns INTEGER NOT NULL,
+                 command TEXT NOT NULL
+             );
+             CREATE INDEX idx_send_history_port ON send_history(port_name, id);",
+        )?;
+        Ok(Self { conn })
+    }
+
+    /// Register a port as active.
+    ///
+    /// # Errors
+    /// Returns error on database failure.
+    pub fn port_opened(&self, name: &str, config: &PortConfig) -> Result<(), StateError> {
+        let json = serde_json::to_string(config)?;
+        let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO ports (name, config_json, opened_at) VALUES (?1, ?2, ?3)",
+            params![name, json, now],
+        )?;
+        Ok(())
+    }
+
+    /// Remove a port from active state.
+    ///
+    /// # Errors
+    /// Returns error on database failure.
+    pub fn port_closed(&self, name: &str) -> Result<(), StateError> {
+        self.conn
+            .execute("DELETE FROM ports WHERE name = ?1", params![name])?;
+        Ok(())
+    }
+
+    /// Get all ports that were active (for restore on startup).
+    ///
+    /// # Errors
+    /// Returns error on database failure.
+    pub fn active_ports(&self) -> Result<Vec<PortEntry>, StateError> {
+        let mut stmt = self.conn.prepare("SELECT name, config_json FROM ports")?;
+        let rows = stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
+            let json: String = row.get(1)?;
+            Ok((name, json))
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (name, json) = row?;
+            if let Ok(config) = serde_json::from_str(&json) {
+                entries.push(PortEntry { name, config });
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Append a command to send history for a port.
+    ///
+    /// # Errors
+    /// Returns error on database failure.
+    pub fn append_send_history(&self, port_name: &str, command: &str) -> Result<(), StateError> {
+        let ts = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        self.conn.execute(
+            "INSERT INTO send_history (port_name, timestamp_ns, command) VALUES (?1, ?2, ?3)",
+            params![port_name, ts, command],
+        )?;
+        // Trim to 1000 per port
+        self.conn.execute(
+            "DELETE FROM send_history WHERE port_name = ?1 AND id NOT IN \
+             (SELECT id FROM send_history WHERE port_name = ?1 ORDER BY id DESC LIMIT 1000)",
+            params![port_name],
+        )?;
+        Ok(())
+    }
+
+    /// Load send history for a port.
+    ///
+    /// # Errors
+    /// Returns error on database failure.
+    pub fn load_send_history(
+        &self,
+        port_name: &str,
+        limit: u32,
+    ) -> Result<Vec<String>, StateError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT command FROM send_history WHERE port_name = ?1 ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![port_name, limit], |row| row.get::<_, String>(0))?;
+        let mut history: Vec<String> = rows.collect::<Result<Vec<_>, _>>()?;
+        history.reverse();
+        Ok(history)
+    }
+
+    /// Get the path to the data directory (for constructing port DB paths).
+    #[must_use]
+    pub fn port_db_path(data_dir: &Path, port_name: &str) -> PathBuf {
+        let sanitized = port_name.replace(['/', '\\'], "_");
+        data_dir.join(format!("{sanitized}.db"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_port_open_close() {
+        let db = StateDb::open_memory().unwrap();
+        let config = PortConfig::default();
+
+        db.port_opened("/dev/ttyUSB0", &config).unwrap();
+        let ports = db.active_ports().unwrap();
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].name, "/dev/ttyUSB0");
+        assert_eq!(ports[0].config.baudrate, 115_200);
+
+        db.port_closed("/dev/ttyUSB0").unwrap();
+        let ports = db.active_ports().unwrap();
+        assert!(ports.is_empty());
+    }
+
+    #[test]
+    fn test_send_history() {
+        let db = StateDb::open_memory().unwrap();
+
+        db.append_send_history("/dev/ttyUSB0", "help").unwrap();
+        db.append_send_history("/dev/ttyUSB0", "version").unwrap();
+        db.append_send_history("/dev/ttyUSB1", "other").unwrap();
+
+        let history = db.load_send_history("/dev/ttyUSB0", 10).unwrap();
+        assert_eq!(history, vec!["help", "version"]);
+
+        let history = db.load_send_history("/dev/ttyUSB1", 10).unwrap();
+        assert_eq!(history, vec!["other"]);
+    }
+
+    #[test]
+    fn test_port_reopen_preserves_config() {
+        let db = StateDb::open_memory().unwrap();
+        let config = PortConfig {
+            baudrate: 9600,
+            ..PortConfig::default()
+        };
+
+        db.port_opened("/dev/ttyUSB0", &config).unwrap();
+        let ports = db.active_ports().unwrap();
+        assert_eq!(ports[0].config.baudrate, 9600);
+    }
+}

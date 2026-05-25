@@ -1,0 +1,215 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [release-please]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          case "${{ matrix.target }}" in
+            *musl*) sudo apt-get install -y musl-tools ;;
+          esac
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << 'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+
+          [target.aarch64-unknown-linux-musl]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get install -y musl-tools
+
+      - name: Install GUI dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+
+      - name: Build
+        run: cargo build --release --all-features --target ${{ matrix.target }}
+
+      - name: Create archive
+        shell: bash
+        run: |
+          VERSION=${{ needs.release-please.outputs.version }}
+          BIN_NAME=devserial
+
+          case "${{ matrix.target }}" in
+            *windows*)
+              ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.zip"
+              cp target/${{ matrix.target }}/release/${BIN_NAME}.exe .
+              7z a "$ARCHIVE" "${BIN_NAME}.exe" README.md LICENSE
+              ;;
+            *)
+              ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.tar.gz"
+              cp target/${{ matrix.target }}/release/${BIN_NAME} .
+              chmod +x "${BIN_NAME}"
+              tar czf "$ARCHIVE" "${BIN_NAME}" README.md LICENSE
+              ;;
+          esac
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+
+  upload-assets:
+    name: Upload release assets
+    needs: [release-please, build]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: Upload assets to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG=${{ needs.release-please.outputs.tag_name }}
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec gh release upload "$TAG" {} \;
+
+  update-homebrew:
+    name: Update Homebrew tap
+    needs: [release-please, upload-assets]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: Calculate checksums and update tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION=${{ needs.release-please.outputs.version }}
+
+          X64_FILE=$(find artifacts -name "devserial-${VERSION}-x86_64-apple-darwin.tar.gz")
+          ARM64_FILE=$(find artifacts -name "devserial-${VERSION}-aarch64-apple-darwin.tar.gz")
+
+          X64_SHA=$(sha256sum "$X64_FILE" | cut -d' ' -f1)
+          ARM64_SHA=$(sha256sum "$ARM64_FILE" | cut -d' ' -f1)
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/metaneutrons/homebrew-tap.git"
+          cd homebrew-tap
+          mkdir -p Formula
+
+          cat > Formula/devserial.rb << EOF
+          class Devserial < Formula
+            desc "MCP server bridging serial hardware to LLMs"
+            homepage "https://github.com/metaneutrons/devserial-mcp"
+            version "${VERSION}"
+            license "GPL-3.0"
+
+            on_macos do
+              if Hardware::CPU.intel?
+                url "https://github.com/metaneutrons/devserial-mcp/releases/download/v${VERSION}/devserial-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${X64_SHA}"
+              else
+                url "https://github.com/metaneutrons/devserial-mcp/releases/download/v${VERSION}/devserial-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${ARM64_SHA}"
+              end
+            end
+
+            def install
+              bin.install "devserial"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/devserial --version")
+            end
+          end
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/devserial.rb
+          git commit -m "Update devserial to ${VERSION}"
+          git push
+
+  publish-aur:
+    name: Publish to AUR
+    needs: [release-please, upload-assets]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Update PKGBUILD version
+        run: |
+          VERSION=${{ needs.release-please.outputs.version }}
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" aur/PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" aur/PKGBUILD
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+        with:
+          pkgname: devserial
+          pkgbuild: ./aur/PKGBUILD
+          commit_username: metaneutrons
+          commit_email: aur@metaneutrons.github.io
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ needs.release-please.outputs.version }}"
+          ssh_keyscan_types: rsa,ecdsa,ed25519

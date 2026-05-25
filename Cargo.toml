@@ -1,0 +1,54 @@
+[package]
+name = "devserial"
+version = "0.1.0"
+edition = "2024"
+description = "MCP server bridging serial hardware to LLMs via SQLite-backed buffer"
+license = "GPL-3.0-only"
+repository = "https://github.com/metaneutrons/devserial-mcp"
+rust-version = "1.85"
+keywords = ["serial", "mcp", "embedded", "uart", "sqlite"]
+categories = ["hardware-support", "development-tools"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+crossterm = { version = "0.28", optional = true }
+eframe = { version = "0.34", optional = true, default-features = false, features = ["default_fonts", "glow"] }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+ratatui = { version = "0.29", optional = true }
+regex = "1"
+rmcp = { version = "1.6", features = ["server", "macros", "transport-io", "transport-async-rw"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serial2 = "0.2"
+serial2-tokio = "0.1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[features]
+default = ["esp"]
+esp = []
+testutil = []
+monitor = ["eframe", "image"]
+tui = ["ratatui", "crossterm"]
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+devserial = { path = ".", features = ["testutil"] }
+tempfile = "3"
+tokio-test = "0.4"
